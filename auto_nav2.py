@@ -67,6 +67,7 @@ def callback(msg, tfBuffer):
     global occdata
     global im2arr
     global i_centerx
+    global i_centery
     # create numpy array
     occdata = np.array([msg.data])
     # compute histogram to identify percent of bins with -1
@@ -196,17 +197,18 @@ def rotatebot(rot_angle):
 def pick_direction():
     global occdata
     global im2arr
-    i_centerx = 384 // 2 #must be replaced with variable
-    i_centery = 384 // 2 #must be replaced with variable
+    global i_centerx
+    global i_centery
+    global laser_range
     from math import sqrt, tan
     global laser_range
-    line_increment = 30 
+    line_increment = 10
     x_increment = 20
     index = []
     line_dict = {}
-    line_list = []
+
     for angles in range(0, 360 - line_increment + 1, line_increment):
-	line_list.append([angles]) #line list should look like [[0], [30]..., [330]]
+	line_dict.update({angles : []}) #line list should look like [[0], [30]..., [330]]
 
 
     def line_drawer(angle, x): #take in angle from turtlebot face and x which is calculated from x_increment, returns y index that is on line
@@ -217,45 +219,73 @@ def pick_direction():
 	slope = tan(90 - angle)
 	y = slope * x
 	return y
+
     def calculate_distance(x, y):
 	distance = sqrt(x**2 + y**2)
 	return distance
-    def generate_unoccupied_list(line_list, angles_range, x_input_range):
+
+    def generate_unoccupied_list(line_list, angles_range, x_input_range): #find the unoccupied area in the specific direction, returns a dict {angle : 
 	for angles in angles_range:
 	    for x_input in x_input_range:
 	        y_input = line_drawer(angles, x_input)
 		y_input_index = abs(y_input - i_centery)
 		x_input_index = x_input + i_centerx
-	        if im2arr[y_input_index][x_input_index] == 0: #y_input and x_input is modified according to array indexing]
-		    line_dict.update({calculate_distance(x_input, y_input) : angles})
+	        if im2arr[y_input_index][x_input_index] == 0 and angles in line_dict.keys(): 
+		    line_dict.update({angles : calculate_distance(x_input, y_input)})
 		    break
-		if 1 < im2arr[(y_input - i_centery) * -1][x_input + i_centerx] <= 101: #y_input and x_input is modified according to array indexing]
-		    line_dict.remove({calculate_distance(x_input, y_input) : angles})
+		if 50 < im2arr[(y_input - i_centery) * -1][x_input + i_centerx] <= 101 and angles in line_dict.keys(): #determine if there is a wall
+		    del line_dict[angles]
+		    break
 
 
     # publish to cmd_vel to move TurtleBot
     pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
 
-    # stop moving
-    twist = Twist()
-    twist.linear.x = 0.0
-    twist.angular.z = 0.0
-    time.sleep(1)
-    pub.publish(twist)
 
-
-    #Part to choose direction to unoccupied map
+#Part to choose direction to unoccupied map
     if laser_range.size != 0: 
 	generate_unoccupied_list(line_dict, range(0, 180 - line_increment + 1, line_increment), range(0, i_centerx + 1, x_increment))
 	generate_unoccupied_list(line_dict, range(180, 360 - line_increment + 1, line_increment), range(0, -1 * i_centerx - 1, -1 * x_increment))
 	#find min distance 
 	list_of_distances = line_dict.keys()
         smallest_distance = min(list_of_distances)
-        lr2i = line_dict[smallest_distance]
+        goal = line_dict[smallest_distance]
 		  
     else:
-	lr2i = 0
+	goal = 0
 
+
+
+	
+#Part to avoid obstacles
+    def identify_openings(laser_range, line_increment): #return a dict of potential openings with its distances
+        laser_distances = {}
+	for angles in range(0, 360 - line_increment + 1, line_increment):
+	    laser_distances.update({angles : laser_range[angles]})
+	average_distance = sum(laser_distances.values()) / len(laser_distances)
+	for angles in laser_distances.keys():
+	    if laser_distances[angles] < average_distance:
+		del laser_distances[angles]
+	return laser_distances
+
+    def choose_best_opening(laser_distances, goal):
+	if len(laser_distances) == 1:
+	    lr2i = (laser_distances.keys())[0]
+	else: 
+	    list_of_potential_angles = laser_distances.keys()
+	    dict_of_angles_and_differences = {}
+	    
+	    for angles in laser_distances.keys():
+		angle_differences = abs(laser_distances[angles] - goal)
+		dict_of_angles_and_differences.update({angle_differences : angles})
+
+	    min_angle_differences = min(dict_of_angles_and_differences.keys())
+	    lr2i =  dict_of_angles_and_differences[min_angle_differences]
+
+	return lr2i
+
+    lr2i = choose_best_opening(identify_openings(laser_range, line_increment), goal)
+    
     rospy.loginfo(['Picked direction: ' + str(lr2i) + ' ' + str(laser_range[lr2i]) + ' m'])
     # rotate to that direction
     rotatebot(float(lr2i))
@@ -268,11 +298,6 @@ def pick_direction():
     # reliably with this
     time.sleep(1)
     pub.publish(twist)
-
-	
-#Part to avoid obstacles
-
-
 
 
 
@@ -363,7 +388,9 @@ def mover():
 
     # find direction with the largest distance from the Lidar,
     # rotate to that direction, and start moving
-    pick_direction()
+    if laser_range.size != 0:
+        pick_direction()
+
 
     while not rospy.is_shutdown():
         if laser_range.size != 0:
@@ -375,12 +402,13 @@ def mover():
             lri[0] = []
 
         # if the list is not empty
-        if(len(lri[0])>0):
-            rospy.loginfo(['Stop!'])
+        while not rospy.is_shutdown():
+            rospy.loginfo(['Checking best direction...'])
             # find direction with the largest distance from the Lidar
             # rotate to that direction
             # start moving
             pick_direction()
+	    rospy.sleep(1)
 
         # check if SLAM map is complete
         if timeWritten :
@@ -399,6 +427,7 @@ def mover():
                 cv2.imwrite('mazemap.png',occdata)
 
         rate.sleep()
+    
 
 
 	
