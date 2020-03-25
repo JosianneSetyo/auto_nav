@@ -21,7 +21,7 @@ occdata = np.array([])
 yaw = 0.0
 rotate_speed = 0.22
 linear_speed = 0.22
-stop_distance = 0.25
+stop_distance = 0.5
 occ_bins = [-1, 0, 100, 101]
 front_angle = 30
 front_angles = range(-front_angle,front_angle+1,1)
@@ -192,9 +192,7 @@ def rotatebot(rot_angle):
     time.sleep(1)
     pub.publish(twist)
 
-
-
-def pick_direction():
+def set_goal():
     global occdata
     global im2arr
     global i_centerx
@@ -209,7 +207,7 @@ def pick_direction():
 
     for angles in range(0, 360 - line_increment + 1, line_increment):
 	line_dict.update({angles : []}) #line list should look like [[0], [30]..., [330]]
-
+    #Part to choose direction to unoccupied map
 
     def line_drawer(angle, x): #take in angle from turtlebot face and x which is calculated from x_increment, returns y index that is on line
 	if angle == 0:
@@ -233,16 +231,7 @@ def pick_direction():
 	        if im2arr[y_input_index][x_input_index] == 0 and angles in line_dict.keys(): 
 		    line_dict.update({angles : calculate_distance(x_input, y_input)})
 		    break
-		if 50 < im2arr[(y_input - i_centery) * -1][x_input + i_centerx] <= 101 and angles in line_dict.keys(): #determine if there is a wall
-		    del line_dict[angles]
-		    break
-
-
-    # publish to cmd_vel to move TurtleBot
-    pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
-
-
-#Part to choose direction to unoccupied map
+    #Part to choose direction to unoccupied map
     if laser_range.size != 0: 
 	generate_unoccupied_list(line_dict, range(0, 180 - line_increment + 1, line_increment), range(0, i_centerx + 1, x_increment))
 	generate_unoccupied_list(line_dict, range(180, 360 - line_increment + 1, line_increment), range(0, -1 * i_centerx - 1, -1 * x_increment))
@@ -253,9 +242,26 @@ def pick_direction():
 		  
     else:
 	goal = 0
+    return goal
 
+def pick_direction(goal):
+    global occdata
+    global im2arr
+    global i_centerx
+    global i_centery
+    global laser_range
+    from math import sqrt, tan
+    global laser_range
+    line_increment = 10
 
-
+    # publish to cmd_vel to move TurtleBot
+    pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
+    # stop moving
+    twist = Twist()
+    twist.linear.x = 0.0
+    twist.angular.z = 0.0
+    time.sleep(1)
+    pub.publish(twist)
 	
 #Part to avoid obstacles
     def identify_openings(laser_range, line_increment): #return a dict of potential openings with its distances
@@ -282,12 +288,19 @@ def pick_direction():
 	    min_angle_differences = min(dict_of_angles_and_differences.keys())
 	    lr2i =  dict_of_angles_and_differences[min_angle_differences]
 
-	return lr2i
 
+	return lr2i
+            
     lr2i = choose_best_opening(identify_openings(laser_range, line_increment), goal)
-    
-    rospy.loginfo(['Picked direction: ' + str(lr2i) + ' ' + str(laser_range[lr2i]) + ' m'])
+    if lr2i > 180:
+	lr2i = lr2i - 360
+
+	
+    try:
+        rospy.loginfo(['Picked direction: ' + str(lr2i) + ' ' + str(laser_range[lr2i]) + ' m'])
     # rotate to that direction
+    except IndexError:
+	rospy.loginfo(['Picked direction: ' + str(lr2i)])
     rotatebot(float(lr2i))
 
     # start moving
@@ -388,9 +401,10 @@ def mover():
 
     # find direction with the largest distance from the Lidar,
     # rotate to that direction, and start moving
-    if laser_range.size != 0:
-        pick_direction()
-
+    
+    goal = set_goal()
+    rospy.loginfo(['Goal: ' + str(goal)])
+    pick_direction(goal)
 
     while not rospy.is_shutdown():
         if laser_range.size != 0:
@@ -402,13 +416,12 @@ def mover():
             lri[0] = []
 
         # if the list is not empty
-        while not rospy.is_shutdown():
-            rospy.loginfo(['Checking best direction...'])
+        if(len(lri[0])>0):
+            rospy.loginfo(['Stop!'])
             # find direction with the largest distance from the Lidar
             # rotate to that direction
             # start moving
-            pick_direction()
-	    rospy.sleep(1)
+            pick_direction(goal)
 
         # check if SLAM map is complete
         if timeWritten :
